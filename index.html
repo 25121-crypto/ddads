@@ -1,0 +1,444 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>세포 수호대 (Cell Protectors)</title>
+    <style>
+        body { 
+            margin: 0; 
+            padding: 0; 
+            background-color: #1a1a2e; 
+            color: white; 
+            font-family: 'Inter', 'Malgun Gothic', sans-serif; 
+            display: flex; 
+            justify-content: center; 
+            align-items: center; 
+            height: 100vh; 
+            overflow: hidden; 
+        }
+        #gameContainer { 
+            position: relative; 
+            width: 400px; 
+            height: 600px; 
+            background-color: #16213e; 
+            border: 4px solid #0f3460; 
+            border-radius: 10px;
+            box-shadow: 0 0 20px rgba(0, 0, 0, 0.5);
+            overflow: hidden;
+        }
+        canvas { 
+            display: block; 
+            width: 100%;
+            height: 100%;
+        }
+        .overlay { 
+            position: absolute; 
+            top: 0; 
+            left: 0; 
+            width: 100%; 
+            height: 100%; 
+            background: rgba(0,0,0,0.85); 
+            display: flex; 
+            flex-direction: column; 
+            justify-content: center; 
+            align-items: center; 
+            text-align: center; 
+            z-index: 10;
+        }
+        h1 { margin-bottom: 10px; color: #e94560; text-shadow: 2px 2px 4px rgba(0,0,0,0.5); }
+        h2 { margin-bottom: 20px; color: #f39c12; }
+        p { margin-bottom: 20px; color: #ddd; font-size: 14px; line-height: 1.5; padding: 0 20px; word-break: keep-all;}
+        button { 
+            padding: 12px 24px; 
+            margin: 8px; 
+            font-size: 16px; 
+            cursor: pointer; 
+            border: none; 
+            border-radius: 8px; 
+            background: #e94560; 
+            color: white; 
+            font-weight: bold; 
+            transition: all 0.2s;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.3);
+        }
+        button:hover { 
+            background: #d83a56; 
+            transform: translateY(-2px);
+        }
+        .quiz-btn { 
+            display: block; 
+            width: 85%; 
+            margin: 10px auto; 
+            background: #0f3460; 
+        }
+        .quiz-btn:hover { background: #1a4a80; }
+        #ui { 
+            position: absolute; 
+            top: 10px; 
+            left: 15px; 
+            font-size: 16px; 
+            font-weight: bold; 
+            pointer-events: none; 
+            text-shadow: 1px 1px 2px black;
+        }
+        #ui div { margin-bottom: 5px; }
+        .hidden { display: none !important; }
+    </style>
+</head>
+<body>
+
+<div id="gameContainer">
+    <canvas id="gameCanvas" width="400" height="600"></canvas>
+    
+    <!-- 인게임 UI -->
+    <div id="ui">
+        <div>점수: <span id="scoreText" style="color: #f1c40f;">0</span></div>
+        <div>목숨: <span id="livesText" style="color: #ff4757;">❤❤❤</span></div>
+    </div>
+
+    <!-- 시작 화면 -->
+    <div id="startScreen" class="overlay">
+        <h1>세포 수호대</h1>
+        <p>방향키 이동 / 스페이스바 공격<br><br><b>동물세포(라이소솜)</b> 또는 <b>식물세포(액포)</b>가 되어<br>바이러스와 세포 노폐물을 제거하세요!</p>
+        <button onclick="startGame('animal')">동물세포 모드 (라이소솜)</button>
+        <button onclick="startGame('plant')" style="background: #2ed573;">식물세포 모드 (액포)</button>
+    </div>
+
+    <!-- 퀴즈 화면 -->
+    <div id="quizScreen" class="overlay hidden">
+        <h2>보스 격파! 세포 퀴즈</h2>
+        <p id="quizQuestion"></p>
+        <div id="quizOptions" style="width: 100%;"></div>
+    </div>
+
+    <!-- 게임 오버 화면 -->
+    <div id="gameOverScreen" class="overlay hidden">
+        <h1>게임 오버</h1>
+        <p>세포가 파괴되었습니다...</p>
+        <p>최종 점수: <span id="finalScore" style="color:#f1c40f; font-size:20px; font-weight:bold;"></span></p>
+        <button onclick="location.reload()">다시 시작</button>
+    </div>
+</div>
+
+<script>
+const canvas = document.getElementById('gameCanvas');
+const ctx = canvas.getContext('2d');
+
+// 게임 상태 변수
+let isPlaying = false;
+let isPaused = false;
+let mode = ''; 
+let score = 0;
+let lastTime = 0;
+
+// 키보드 입력 상태
+const keys = { ArrowUp: false, ArrowDown: false, ArrowLeft: false, ArrowRight: false, Space: false };
+document.addEventListener('keydown', e => { 
+    if(keys.hasOwnProperty(e.code)) keys[e.code] = true; 
+    if(e.code === 'Space') keys.Space = true;
+});
+document.addEventListener('keyup', e => { 
+    if(keys.hasOwnProperty(e.code)) keys[e.code] = false; 
+    if(e.code === 'Space') keys.Space = false;
+});
+
+// 게임 객체들
+let player = { 
+    x: 190, y: 500, w: 20, h: 20, 
+    speed: 250, color: '', 
+    lives: 3, 
+    invincible: false, invincibleTimer: 0, 
+    shootCooldown: 0, maxCooldown: 0.3, 
+    spreadShot: false, powerTimer: 0 
+};
+let bullets = [];
+let enemies = [];
+let items = [];
+let boss = null;
+let enemySpawnTimer = 0;
+let bossSpawnTimer = 0; 
+
+// 퀴즈 데이터 (교과서 명칭 반영)
+const quizData = [
+    { q: "세포호흡이 일어나며, 크리스타와 바탕질 구조를 가진 소기관은?", options: ["마이토콘드리아", "엽록체", "골지체", "리보솜"], a: 0 },
+    { q: "빛에너지를 흡수하여 포도당을 합성하며, 타이라코이드와 스트로마로 구성된 소기관은?", options: ["마이토콘드리아", "엽록체", "라이소솜", "소포체"], a: 1 },
+    { q: "아미노산이 펩타이드 결합을 통해 단백질로 합성되는 장소는?", options: ["라이소솜", "라이보솜", "액포", "골지체"], a: 1 },
+    { q: "단백질을 포장하여 세포 밖으로 분비하는 데 관여하는 소기관은?", options: ["골지체", "핵", "엽록체", "액포"], a: 0 }
+];
+
+function startGame(selectedMode) {
+    mode = selectedMode;
+    // 모드에 따른 플레이어 기체 색상 변경
+    player.color = mode === 'animal' ? '#ff4757' : '#2ed573'; 
+    document.getElementById('startScreen').classList.add('hidden');
+    isPlaying = true;
+    lastTime = performance.now();
+    requestAnimationFrame(gameLoop);
+}
+
+function spawnEnemy() {
+    // 가로 폭 안에서 무작위 등장
+    enemies.push({ x: Math.random() * (canvas.width - 20), y: -20, w: 20, h: 20, speed: 120, hp: 1 });
+}
+
+function spawnItem(x, y) {
+    if(Math.random() < 0.2) { // 20% 확률로 아이템 드롭
+        const type = Math.random() < 0.5 ? 'ATP' : 'Ribosome';
+        items.push({ x: x, y: y, radius: 8, speed: 80, type: type });
+    }
+}
+
+function spawnBoss() {
+    boss = { x: 150, y: 30, w: 80, h: 60, hp: 15, maxHp: 15, speed: 60, dir: 1 };
+}
+
+// 퀴즈 출력 및 버그 수정(lastTime 갱신)이 포함된 함수
+function showQuiz() {
+    isPaused = true; // 게임 일시정지
+    document.getElementById('quizScreen').classList.remove('hidden');
+    
+    // 무작위 퀴즈 출제
+    const q = quizData[Math.floor(Math.random() * quizData.length)];
+    document.getElementById('quizQuestion').innerText = q.q;
+    
+    const optionsDiv = document.getElementById('quizOptions');
+    optionsDiv.innerHTML = '';
+    
+    q.options.forEach((opt, idx) => {
+        const btn = document.createElement('button');
+        btn.className = 'quiz-btn';
+        btn.innerText = opt;
+        btn.onclick = () => {
+            if(idx === q.a) score += 500; // 정답 시 500점 보너스
+            
+            document.getElementById('quizScreen').classList.add('hidden');
+            boss = null;
+            bossSpawnTimer = 0; // 보스 타이머 초기화 (다시 15초 카운트)
+            isPaused = false;
+            
+            // ★ 버그 수정 핵심 ★
+            // 퀴즈를 푸는 동안 흘러간 엄청난 시간을 방지하기 위해 lastTime을 현재 시간으로 동기화
+            lastTime = performance.now(); 
+            requestAnimationFrame(gameLoop);
+        };
+        optionsDiv.appendChild(btn);
+    });
+}
+
+function update(dt) {
+    // 1. 아이템 파워업 지속 시간 처리 (5초)
+    if(player.powerTimer > 0) {
+        player.powerTimer -= dt;
+        if(player.powerTimer <= 0) {
+            player.maxCooldown = 0.3; // 기본 연사력 복구
+            player.spreadShot = false; // 기본 샷 복구
+        }
+    }
+
+    // 2. 무적 시간 처리 (2초)
+    if(player.invincible) {
+        player.invincibleTimer -= dt;
+        if(player.invincibleTimer <= 0) player.invincible = false;
+    }
+
+    // 3. 플레이어 이동 처리
+    if(keys.ArrowLeft && player.x > 0) player.x -= player.speed * dt;
+    if(keys.ArrowRight && player.x < canvas.width - player.w) player.x += player.speed * dt;
+    if(keys.ArrowUp && player.y > 0) player.y -= player.speed * dt;
+    if(keys.ArrowDown && player.y < canvas.height - player.h) player.y += player.speed * dt;
+
+    // 4. 총알 발사
+    player.shootCooldown -= dt;
+    if(keys.Space && player.shootCooldown <= 0) {
+        // 중앙 총알
+        bullets.push({ x: player.x + player.w/2 - 2, y: player.y, w: 4, h: 12, speed: 500, dx: 0 });
+        if(player.spreadShot) { // 다중 발사 상태
+            bullets.push({ x: player.x + player.w/2 - 2, y: player.y, w: 4, h: 12, speed: 500, dx: -150 });
+            bullets.push({ x: player.x + player.w/2 - 2, y: player.y, w: 4, h: 12, speed: 500, dx: 150 });
+        }
+        player.shootCooldown = player.maxCooldown;
+    }
+
+    // 총알 이동
+    bullets.forEach(b => { 
+        b.y -= b.speed * dt; 
+        b.x += b.dx * dt; 
+    });
+    // 화면 밖 총알 제거
+    bullets = bullets.filter(b => b.y > -20 && b.x > -20 && b.x < canvas.width + 20);
+
+    // 5. 아이템 이동 및 충돌
+    items.forEach((item, i) => {
+        item.y += item.speed * dt;
+        // 충돌 판정 (원형(아이템) vs 사각형(플레이어) 근사 충돌)
+        if(item.x + item.radius > player.x && item.x - item.radius < player.x + player.w && 
+           item.y + item.radius > player.y && item.y - item.radius < player.y + player.h) {
+            
+            if(item.type === 'ATP') player.maxCooldown = 0.1; // 연사력 대폭 증가
+            if(item.type === 'Ribosome') player.spreadShot = true; // 3방향 샷
+            
+            player.powerTimer = 5.0; // 아이템 효과 5초 적용
+            items.splice(i, 1);
+            score += 50;
+            updateUI();
+        }
+    });
+    items = items.filter(item => item.y < canvas.height + 20);
+
+    // 6. 스폰 타이머 관리
+    if(!boss) {
+        bossSpawnTimer += dt;
+        enemySpawnTimer -= dt;
+        
+        if(enemySpawnTimer <= 0) {
+            spawnEnemy();
+            enemySpawnTimer = 0.8; // 0.8초마다 적 생성
+        }
+        // 정확히 15초마다 보스 소환
+        if(bossSpawnTimer >= 15) { 
+            spawnBoss();
+        }
+    } else {
+        // 보스 이동 패턴 (좌우 왕복)
+        boss.x += boss.speed * boss.dir * dt;
+        if(boss.x <= 20 || boss.x + boss.w >= canvas.width - 20) {
+            boss.dir *= -1;
+        }
+    }
+
+    // 7. 일반 적 이동 및 충돌
+    enemies.forEach((e, i) => {
+        e.y += e.speed * dt;
+        // 적과 플레이어 충돌 (무적이 아닐 때만)
+        if(!player.invincible && 
+           e.x < player.x + player.w && e.x + e.w > player.x && 
+           e.y < player.y + player.h && e.y + e.h > player.y) {
+            
+            player.lives--;
+            player.invincible = true;
+            player.invincibleTimer = 2.0; // 2초 무적 부여
+            enemies.splice(i, 1);
+            updateUI();
+            
+            if(player.lives <= 0) gameOver();
+        }
+    });
+    enemies = enemies.filter(e => e.y < canvas.height + 20);
+
+    // 8. 총알 피격 판정 (총알 vs 적/보스)
+    bullets.forEach((b, bi) => {
+        // 보스 피격
+        if(boss && b.x < boss.x + boss.w && b.x + b.w > boss.x && b.y < boss.y + boss.h && b.y + b.h > boss.y) {
+            boss.hp--;
+            bullets.splice(bi, 1);
+            if(boss.hp <= 0) showQuiz();
+            return; // 보스를 맞추면 일반 적 충돌검사는 생략
+        }
+        
+        // 일반 적 피격
+        enemies.forEach((e, ei) => {
+            if(b.x < e.x + e.w && b.x + b.w > e.x && b.y < e.y + e.h && b.y + b.h > e.y) {
+                spawnItem(e.x + e.w/2, e.y + e.h/2); // 적 중앙에서 아이템 생성 시도
+                enemies.splice(ei, 1);
+                bullets.splice(bi, 1);
+                score += 20;
+                updateUI();
+            }
+        });
+    });
+}
+
+function updateUI() {
+    document.getElementById('scoreText').innerText = score;
+    let hearts = '';
+    for(let i = 0; i < player.lives; i++) hearts += '❤';
+    document.getElementById('livesText').innerText = hearts;
+}
+
+function draw() {
+    // 배경 클리어
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+    // 배경 효과 (별 또는 세포질 느낌)
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.1)';
+    for(let i=0; i<5; i++){
+        ctx.fillRect(Math.random() * canvas.width, Math.random() * canvas.height, 2, 2);
+    }
+
+    // 플레이어 그리기 (무적일 때 깜빡임 효과)
+    // performance.now()를 100으로 나눈 몫이 짝수일 때만 그려서 깜빡임 구현
+    if(!player.invincible || Math.floor(performance.now() / 150) % 2 === 0) {
+        ctx.fillStyle = player.color;
+        ctx.beginPath();
+        ctx.moveTo(player.x + player.w/2, player.y);
+        ctx.lineTo(player.x + player.w, player.y + player.h);
+        ctx.lineTo(player.x, player.y + player.h);
+        ctx.fill();
+        ctx.closePath();
+    }
+
+    // 일반 적 (바이러스 형상)
+    ctx.fillStyle = '#ecf0f1';
+    enemies.forEach(e => {
+        ctx.fillRect(e.x, e.y, e.w, e.h);
+    });
+
+    // 보스 (세포 노폐물)
+    if(boss) {
+        ctx.fillStyle = '#9b59b6';
+        ctx.fillRect(boss.x, boss.y, boss.w, boss.h);
+        
+        // 보스 체력바
+        ctx.fillStyle = 'red';
+        ctx.fillRect(boss.x, boss.y - 15, boss.w, 8);
+        ctx.fillStyle = '#2ecc71';
+        ctx.fillRect(boss.x, boss.y - 15, boss.w * (boss.hp / boss.maxHp), 8);
+        
+        ctx.fillStyle = 'white';
+        ctx.font = '12px Arial';
+        ctx.textAlign = 'center';
+        ctx.fillText("세포 노폐물", boss.x + boss.w/2, boss.y + 35);
+    }
+
+    // 아이템 (동그라미)
+    items.forEach(item => {
+        // ATP는 노란색, 라이보솜은 파란색
+        ctx.fillStyle = item.type === 'ATP' ? '#f1c40f' : '#3498db'; 
+        ctx.beginPath();
+        ctx.arc(item.x, item.y, item.radius, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.closePath();
+    });
+
+    // 총알
+    ctx.fillStyle = '#f1c40f';
+    bullets.forEach(b => {
+        ctx.fillRect(b.x, b.y, b.w, b.h);
+    });
+}
+
+function gameOver() {
+    isPlaying = false;
+    document.getElementById('gameOverScreen').classList.remove('hidden');
+    document.getElementById('finalScore').innerText = score;
+}
+
+function gameLoop(currentTime) {
+    if(!isPlaying || isPaused) return;
+
+    // Delta Time 계산 (초 단위)
+    let dt = (currentTime - lastTime) / 1000;
+    lastTime = currentTime;
+    
+    // 브라우저 탭 이동 등으로 인한 비정상적인 시간 도약 방지 (최대 0.1초 캡)
+    if(dt > 0.1) dt = 0.1;
+
+    update(dt);
+    draw();
+
+    requestAnimationFrame(gameLoop);
+}
+</script>
+</body>
+</html>
